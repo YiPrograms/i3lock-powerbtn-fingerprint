@@ -55,7 +55,7 @@
     timer_obj = stop_timer(timer_obj)
 
 typedef void (*ev_callback_t)(EV_P_ ev_timer *w, int revents);
-static void input_done(void);
+static void input_done(bool);
 
 char color[7] = "a3a3a3";
 uint32_t last_resolution[2];
@@ -63,6 +63,7 @@ xcb_window_t win;
 static xcb_cursor_t cursor;
 #ifndef __OpenBSD__
 static pam_handle_t *pam_handle;
+static pam_handle_t *pam_fprint_handle;
 static bool pam_cleanup;
 #endif
 int input_position = 0;
@@ -224,7 +225,7 @@ static void finish_input(void) {
     password[input_position] = '\0';
     unlock_state = STATE_KEY_PRESSED;
     redraw_screen();
-    input_done();
+    input_done(false);
 }
 
 /*
@@ -269,9 +270,9 @@ static void discard_passwd_cb(EV_P_ ev_timer *w, int revents) {
     STOP_TIMER(discard_passwd_timeout);
 }
 
-static void input_done(void) {
+static void input_done(bool fprint) {
     STOP_TIMER(clear_auth_wrong_timeout);
-    auth_state = STATE_AUTH_VERIFY;
+    auth_state = fprint? STATE_AUTH_VERIFY_FPRINT: STATE_AUTH_VERIFY;
     unlock_state = STATE_STARTED;
     redraw_screen();
 
@@ -289,7 +290,8 @@ static void input_done(void) {
         return;
     }
 #else
-    if (pam_authenticate(pam_handle, 0) == PAM_SUCCESS) {
+    pam_handle_t *handle = fprint? pam_fprint_handle: pam_handle;
+    if (pam_authenticate(handle, 0) == PAM_SUCCESS) {
         DEBUG("successfully authenticated\n");
         clear_password_memory();
 
@@ -297,7 +299,7 @@ static void input_done(void) {
          * Related to credentials pam_end() needs to be called to cleanup any temporary
          * credentials like kerberos /tmp/krb5cc_pam_* files which may of been left behind if the
          * refresh of the credentials failed. */
-        pam_setcred(pam_handle, PAM_REFRESH_CRED);
+        pam_setcred(handle, PAM_REFRESH_CRED);
         pam_cleanup = true;
 
         ev_break(EV_DEFAULT, EVBREAK_ALL);
@@ -385,6 +387,23 @@ static void handle_key_press(xcb_key_press_event_t *event) {
 
     if (!composed) {
         n = xkb_keysym_to_utf8(ksym, buffer, sizeof(buffer));
+    }
+
+    if (event->detail == 248) {
+        if (auth_state == STATE_AUTH_WRONG) {
+            retry_verification = true;
+            return;
+        }
+
+        if (skip_without_validation()) {
+            clear_input();
+            return;
+        }
+
+        unlock_state = STATE_KEY_PRESSED;
+        redraw_screen();
+        input_done(true);
+        return;
     }
 
     switch (ksym) {
@@ -498,6 +517,25 @@ static void handle_key_press(xcb_key_press_event_t *event) {
     }
 
     START_TIMER(discard_passwd_timeout, TSTAMP_N_MINS(3), discard_passwd_cb);
+}
+
+
+/*
+ * Handle mapping notify.
+ * For detecting power key press.
+ */
+static void handle_powerkey(xcb_mapping_notify_event_t *event) {
+    if (event->first_keycode == 8 && event->count == 248) { // Power key event
+        xcb_key_press_event_t* event = calloc(32, 1);
+
+        event->event = win;
+        event->response_type = XCB_KEY_PRESS;
+        event->detail = 248;
+
+        xcb_send_event(conn, false, win, XCB_EVENT_MASK_STRUCTURE_NOTIFY, (char*)event);
+        xcb_flush(conn);
+        free(event);
+    }
 }
 
 /*
@@ -898,7 +936,7 @@ static void xcb_check_cb(EV_P_ ev_check *w, int revents) {
             case XCB_CONFIGURE_NOTIFY:
                 handle_screen_resize();
                 break;
-
+                
             default:
                 if (type == xkb_base_event) {
                     process_xkb_event(event);
@@ -960,6 +998,10 @@ static void raise_loop(xcb_window_t window) {
                 DEBUG("DestroyNotify for 0x%08x\n", (((xcb_destroy_notify_event_t *)event)->window));
                 if (((xcb_destroy_notify_event_t *)event)->window == window)
                     exit(EXIT_SUCCESS);
+                break;
+            case XCB_MAPPING_NOTIFY:
+                DEBUG("MappingNotify for 0x%08x\n", (((xcb_destroy_notify_event_t *)event)->window));
+                handle_powerkey((xcb_mapping_notify_event_t *)event);
                 break;
             default:
                 DEBUG("Unhandled event type %d\n", type);
@@ -1083,6 +1125,13 @@ int main(int argc, char *argv[]) {
 
     if ((ret = pam_set_item(pam_handle, PAM_TTY, getenv("DISPLAY"))) != PAM_SUCCESS)
         errx(EXIT_FAILURE, "PAM: %s", pam_strerror(pam_handle, ret));
+
+
+    if ((ret = pam_start("i3lock_fprint", username, &conv, &pam_fprint_handle)) != PAM_SUCCESS)
+        errx(EXIT_FAILURE, "PAM: %s", pam_strerror(pam_fprint_handle, ret));
+
+    if ((ret = pam_set_item(pam_fprint_handle, PAM_TTY, getenv("DISPLAY"))) != PAM_SUCCESS)
+        errx(EXIT_FAILURE, "PAM: %s", pam_strerror(pam_fprint_handle, ret));
 #endif
 
 /* Using mlock() as non-super-user seems only possible in Linux.
@@ -1267,6 +1316,7 @@ int main(int argc, char *argv[]) {
 #ifndef __OpenBSD__
     if (pam_cleanup) {
         pam_end(pam_handle, PAM_SUCCESS);
+        pam_end(pam_fprint_handle, PAM_SUCCESS);
     }
 #endif
 

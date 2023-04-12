@@ -191,6 +191,7 @@ void draw_image(xcb_pixmap_t bg_pixmap, uint32_t *resolution) {
          * (currently verifying, wrong password, or default) */
         switch (auth_state) {
             case STATE_AUTH_VERIFY:
+            case STATE_AUTH_VERIFY_FPRINT:
             case STATE_AUTH_LOCK:
                 cairo_set_source_rgba(ctx, 0, 114.0 / 255, 255.0 / 255, 0.75);
                 break;
@@ -210,6 +211,7 @@ void draw_image(xcb_pixmap_t bg_pixmap, uint32_t *resolution) {
 
         switch (auth_state) {
             case STATE_AUTH_VERIFY:
+            case STATE_AUTH_VERIFY_FPRINT:
             case STATE_AUTH_LOCK:
                 cairo_set_source_rgb(ctx, 51.0 / 255, 0, 250.0 / 255);
                 break;
@@ -252,6 +254,9 @@ void draw_image(xcb_pixmap_t bg_pixmap, uint32_t *resolution) {
         switch (auth_state) {
             case STATE_AUTH_VERIFY:
                 text = "Verifying…";
+                break;
+            case STATE_AUTH_VERIFY_FPRINT:
+                text = "Fingerprint";
                 break;
             case STATE_AUTH_LOCK:
                 text = "Locking…";

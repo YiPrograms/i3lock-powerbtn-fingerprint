@@ -19,6 +19,7 @@ typedef enum {
     STATE_AUTH_LOCK = 2,          /* currently locking the screen */
     STATE_AUTH_WRONG = 3,         /* the password was wrong */
     STATE_I3LOCK_LOCK_FAILED = 4, /* i3lock failed to load */
+    STATE_AUTH_VERIFY_FPRINT = 5 /* currently verifying via fingerprint */
 } auth_state_t;
 
 void free_bg_pixmap(void);
